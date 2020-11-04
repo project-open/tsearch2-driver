@@ -11,15 +11,10 @@
     </querytext>
   </fullquery>
 
-  <fullquery name="callback::search::search::impl::tsearch2-driver.base_query"> 
-  <rdbms><type>postgresql</type><version>8.3</version></rdbms>
+  <fullquery name="callback::search::search::impl::tsearch2-driver.base_query">
+  <rdbms><type>postgresql</type><version>8.4</version></rdbms>
     <querytext>
       where fti @@ to_tsquery(:query)
-        and exists (select 1
-                    from acs_object_party_privilege_map m
-                    where m.object_id = txt.object_id
-                      and m.party_id = :user_id
-                      and m.privilege = 'read')
     </querytext>
   </fullquery>
 
@@ -27,8 +22,7 @@
   <rdbms><type>postgresql</type><version>8.3</version></rdbms>
     <querytext>
       select txt.object_id
-      from
-      [join $from_clauses ","]
+      from [join $from_clauses ","]
       $base_query
       [expr {[llength $where_clauses] > 0 ? " and " : ""}]
       [join $where_clauses " and "]
@@ -37,15 +31,40 @@
     </querytext>
   </fullquery>
 
+  <fullquery name="callback::search::search::impl::tsearch2-driver.search">
+  <rdbms><type>postgresql</type><version>8.4</version></rdbms>
+    <querytext>
+        select distinct(orig_object_id) from acs_permission.permission_p_recursive_array(array(
+           select txt.object_id
+           from [join $from_clauses ","]
+           $base_query
+           [expr {[llength $where_clauses] > 0 ? " and [join $where_clauses { and }]" : ""}]
+           order by ts_rank(fti,to_tsquery(:query)) desc
+        ), :user_id, 'read')
+        $limit_clause $offset_clause
+    </querytext>
+  </fullquery>
+
   <fullquery name="callback::search::search::impl::tsearch2-driver.count">
   <rdbms><type>postgresql</type><version>8.3</version></rdbms>
     <querytext>
       select count(*)
-      from
-      [join $from_clauses ","]
+      from [join $from_clauses ","]
+      $base_query
+      [expr {[llength $where_clauses] > 0 ? " and [join $where_clauses { and }]" : ""}]
+    </querytext>
+  </fullquery>
+
+  <fullquery name="dbqd.tsearch2-driver.tcl.tsearch2-driver-procs.callback::search::search::impl::tsearch2-driver.search_result_count">
+  <rdbms><type>postgresql</type><version>8.4</version></rdbms>
+    <querytext>
+      select count(distinct(orig_object_id)) from acs_permission__permission_p_recursive_array(array(
+      select txt.object_id
+      from [join $from_clauses ","]
       $base_query
       [expr {[llength $where_clauses] > 0 ? " and " : ""}]
       [join $where_clauses " and "]
+        ), :user_id, 'read')
     </querytext>
   </fullquery>
 
@@ -75,18 +94,6 @@
               setweight(to_tsvector('default',coalesce(:title,'')),'A')
               ||setweight(to_tsvector('default',coalesce(:keywords,'')),'B')
               ||to_tsvector('default',coalesce(:txt,'')))
-    </querytext>
-  </fullquery>
-
-  <fullquery name="callback::search::search::impl::tsearch2-driver.base_query">
-  <rdbms><type>postgresql</type><version>8.0</version></rdbms>
-    <querytext>
-      where fti @@ to_tsquery('default',:query)
-        and exists (select 1
-                    from acs_object_party_privilege_map m
-                    where m.object_id = txt.object_id
-                      and m.party_id = :user_id
-                      and m.privilege = 'read')
     </querytext>
   </fullquery>
 

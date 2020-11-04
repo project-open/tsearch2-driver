@@ -84,13 +84,21 @@ ad_proc -public tsearch2::update_index {
     }
 }
 
+#ad_proc -callback search::search -impl tsearch2-driver {
+#    {-extra_args {}}
+#    query
+#    offset
+#    limit
+#    user_id
+#    df
+#} 
 ad_proc -callback search::search -impl tsearch2-driver {
     {-extra_args {}}
-    query
-    offset
-    limit
-    user_id
-    df
+    -query
+    -offset
+    -limit
+    -user_id
+    -df
 } {
     ftsenginedriver search operation implementation for tsearch2
 
@@ -98,19 +106,13 @@ ad_proc -callback search::search -impl tsearch2-driver {
     @creation-date 2004-06-05
 
     @param query
-
     @param offset
-
     @param limit
-
     @param user_id
-
     @param df
-
     @param packages list of packages to search for content in.
 
     @return
-
     @error
 } {
     set packages {}
@@ -124,6 +126,10 @@ ad_proc -callback search::search -impl tsearch2-driver {
 
     # clean up query for tsearch2
     set query [tsearch2::build_query -query $query]
+
+    set where_clauses ""
+    set from_clauses ""
+    if {![info exists user_id]} {set user_id 0}
 
     # don't use bind vars since pg7.3 yacks for '1' (which is what comes out of bind vars)
     set limit_clause ""
@@ -139,11 +145,11 @@ ad_proc -callback search::search -impl tsearch2-driver {
     set base_query [db_map base_query]
     if {$df ne ""} {
         set need_acs_objects 1
-        lappend where_clauses " and o.creation_date > :df"
+        lappend where_clauses "o.creation_date > :df"
     }
     if {$dt ne ""} {
         set need_acs_objects 1
-        lappend where_clauses " and o.creation_date < :dt"
+        lappend where_clauses "o.creation_date < :dt"
     }
 
     foreach {arg value} $extra_args {
@@ -152,7 +158,7 @@ ad_proc -callback search::search -impl tsearch2-driver {
 	    lappend from_clauses $arg_clauses(from_clause)
 	}
 	if {[info exists arg_clauses(where_clause)] && $arg_clauses(where_clause) ne ""} {
-	    lappend where_clauses "$arg_clauses(where_clause)"
+	    lappend where_clauses $arg_clauses(where_clause)
 	}
     }
     if {[llength $extra_args]} {
@@ -198,11 +204,9 @@ ad_proc -public tsearch2::summary {
     @creation-date 2004-06-05
 
     @param query
-
     @param txt
 
     @return summary containing search query terms
-
     @error
 } {
     set query [tsearch2::build_query -query $query]
@@ -244,21 +248,31 @@ ad_proc tsearch2::build_query { -query } {
     regsub -all {[^-/@.\d\w\s\(\)]+} $query { } query
 
     # match parens, if they don't match just throw them away
-    set p 0
-    for {set i 0} {$i < [string length $query]} {incr i} {
-        if {[string index $query $i] eq "("} {
-            incr p
-        }
-        if {[string index $query $i] eq ")"} {
-            incr p -1
-        }
-    }
-    if {$p != 0} {
-        regsub -all {\(|\)} $query {} query
-    }
+    # set p 0
+    # for {set i 0} {$i < [string length $query]} {incr i} {
+    #     if {[string index $query $i] eq "("} {
+    #         incr p
+    #     }
+    #     if {[string index $query $i] eq ")"} {
+    #         incr p -1
+    #     }
+    # }
+    # if {$p != 0} {
+    #     regsub -all {\(|\)} $query {} query
+    # }
 
-    # remove or at beginning of query 
+    # remove all parens
+    regsub -all {\(|\)} $query {} query
+
+    # remove empty ()
+    regsub -all {\(\s*\)} $query {} query
+
+    # remove "or" at beginning of query 
     regsub -nocase "^or " $query {} query
+
+    # remove "not" at end of query 
+    regsub -nocase " not$" $query {} query
+
     # replace boolean words with boolean operators
     regsub -nocase "^not " $query {!} query
     set query [string map {" and " " & " " or " " | " " not " " ! "} " $query "]
@@ -272,7 +286,7 @@ ad_proc tsearch2::build_query { -query } {
         regsub {([-/@.\d\w\(\)])\s+?([-/@.\d\w\(\)])} $query {\1 \& \2} query
     }
     # if a ! is by itself then prepend &
-    regsub {(\w+?)\s*(!)} $query {\1 \& !} query
+    regsub -all {(\w+?)\s*(!)} $query {\1 \& !} query
     # if there is )( then insert an & between them 
     # or if there is )\w or \w( insert an & between them
     regsub {(\))([\(\w])} $query {\1 \& \2} query
@@ -283,10 +297,10 @@ ad_proc tsearch2::build_query { -query } {
     return $query
 }
 
-ad_proc -public tsearch2::seperate_query_and_operators {
+ad_proc -public tsearch2::separate_query_and_operators {
     -query
 } {
-    Seperates special operators from full text query
+    Separates special operators from full text query
     
     @author Dave Bauer (dave@thedesignexperience.org)
     @creation-date 2004-07-10
@@ -303,7 +317,7 @@ ad_proc -public tsearch2::seperate_query_and_operators {
     # match quotes
     set quote_count [regexp -all {\"} $query]
     # if quotes don't match, just remove all of them
-    if {[expr {$quote_count % 2}] == 1} {
+    if {$quote_count % 2 == 1} {
         regsub -all {\"} $query {} query
     }
 
@@ -314,8 +328,9 @@ ad_proc -public tsearch2::seperate_query_and_operators {
     set end_q 0
     set valid_operators [tsearch2_driver::valid_operators]
     foreach e [split $query] {
-        if {[regexp {(^\w*):} $e discard operator] \
-                && [lsearch -exact $valid_operators $operator] != -1} {
+        if {[regexp {(^\w*):} $e discard operator]
+	    && $operator in $valid_operators
+        } {
             # query element contains an operator, split operator from
             # query fragment
             set e [split $e ":"]
@@ -355,7 +370,10 @@ ad_proc -public tsearch2::seperate_query_and_operators {
         ns_log debug "operator(e)='${e}' start_q=$start_q end_q=$end_q"
         if {$last_operator ne ""} {
             # FIXME need introspection for operator phrase support
-            if {($last_operator eq "title:" || $last_operator eq "description:") && ($start_q || $end_q)} {
+            if {
+		($last_operator eq "title:" || $last_operator eq "description:") 
+		&& ($start_q || $end_q)
+	    } {
                 lappend ${last_operator}_phrase [regsub -all {\"} $e {}]
             } else {
                 lappend $last_operator [regsub -all {\"} ${e} {}]
@@ -370,7 +388,7 @@ ad_proc -public tsearch2::seperate_query_and_operators {
     }
 
     foreach op $valid_operators {
-        if {[exists_and_not_null $op]} {
+        if {([info exists $op] && [set $op] ne "")} {
             lappend operators $op $title
         }
     }
